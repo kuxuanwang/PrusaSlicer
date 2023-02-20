@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.0)
 project(libigl)
 
-add_library(libigl INTERFACE)
+add_library(libigl INTERFACE "D:/work/PrusaSlicer/PrusaSlicer/src/libigl")
 
-find_package(libigl QUIET)
+#find_package(libigl EXACT REQUIRED PATHS "D:/work/PrusaSlicer/PrusaSlicer/src/libigl")
 
 if(libigl_FOUND)
     message(STATUS "IGL found, using system version...")
