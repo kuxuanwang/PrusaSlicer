@@ -1094,7 +1094,7 @@ static void generate_initial_areas(
 
     std::mutex mutex_layer_storage, mutex_movebounds;
     std::vector<std::unordered_set<Point, PointHash>> already_inserted(num_support_layers);
-    tbb::parallel_for(tbb::blocked_range<size_t>(first_support_layer, num_support_layers),
+    tbb::parallel_for(tbb::blocked_range<size_t>(first_support_layer, num_support_layers, 1e6),
         [&print_object, &volumes, &config, &overhangs, &mesh_config, &mesh_group_settings, &support_params, 
          z_distance_delta, min_xy_dist, force_tip_to_roof, roof_enabled, support_roof_layers, extra_outset, circle_length_to_half_linewidth_change, connect_length, max_overhang_insert_lag,
          &base_circle, &mutex_layer_storage, &mutex_movebounds, &top_contacts, &layer_storage, &already_inserted,
@@ -3154,7 +3154,7 @@ static void finalize_interface_and_support_areas(
 
     // Iterate over the generated circles in parallel and clean them up. Also add support floor.
     tbb::spin_mutex layer_storage_mutex;
-    tbb::parallel_for(tbb::blocked_range<size_t>(0, support_layer_storage.size()),
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, support_layer_storage.size(), 1e6),
         [&](const tbb::blocked_range<size_t> &range) {
         for (size_t layer_idx = range.begin(); layer_idx < range.end(); ++ layer_idx) {
             // Subtract support lines of the branches from the roof
@@ -3859,7 +3859,7 @@ static void organic_smooth_branches_avoid_collisions(
                     throw_on_cancel();
                 }
         });
-#if 0
+#if 1
         std::vector<double> stat;
         for (CollisionSphere& collision_sphere : collision_spheres)
             if (!collision_sphere.locked)
@@ -4047,6 +4047,11 @@ static indexed_triangle_set draw_branches(
     indexed_triangle_set cummulative_mesh;
     indexed_triangle_set partial_mesh;
     indexed_triangle_set temp_mesh;
+#if 1
+    std::unordered_map<SupportElement*, SupportElement*> edge_dict;
+    std::map<int, SupportElement*> node_list;
+    int node_count = 0;
+#endif // 1
     for (LayerIndex layer_idx = 0; layer_idx + 1 < LayerIndex(move_bounds.size()); ++ layer_idx) {
         SupportElements &layer = move_bounds[layer_idx];
         SupportElements &layer_above = move_bounds[layer_idx + 1];
@@ -4058,10 +4063,22 @@ static indexed_triangle_set draw_branches(
                 for (size_t parent_idx = 0; parent_idx < start_element.parents.size(); ++ parent_idx) {
                     path.clear();
                     path.emplace_back(&start_element);
+#if 1
+                    node_list[node_count] = &start_element;
+                    start_element.index = node_count;
+                    node_count++;
+#endif // 1
                     // Traverse each branch until it branches again.
                     SupportElement &first_parent = layer_above[start_element.parents[parent_idx]];
                     assert(path.back()->state.layer_idx + 1 == first_parent.state.layer_idx);
                     path.emplace_back(&first_parent);
+#if 1
+                    node_list[node_count] = &first_parent;
+                    first_parent.index = node_count;
+                    node_count++;
+                    edge_dict[&start_element] = &first_parent;
+#endif // 1
+
                     if (first_parent.parents.size() < 2)
                         first_parent.state.marked = true;
                     if (first_parent.parents.size() == 1) {
@@ -4069,6 +4086,13 @@ static indexed_triangle_set draw_branches(
                             SupportElement &next_parent = move_bounds[parent->state.layer_idx + 1][parent->parents.front()];
                             assert(path.back()->state.layer_idx + 1 == next_parent.state.layer_idx);
                             path.emplace_back(&next_parent);
+#if 1
+                            edge_dict[parent] = &next_parent;
+                            node_list[node_count] = &next_parent;
+                            next_parent.index = node_count;
+                            node_count++;
+#endif // 1
+
                             if (next_parent.parents.size() > 1)
                                 break;
                             next_parent.state.marked = true;
@@ -4103,6 +4127,32 @@ static indexed_triangle_set draw_branches(
                 throw_on_cancel();
             }
     }
+#if 1
+    // construct edge list in terms of node list
+    std::vector<std::pair<int, int>> edge_index_list;
+    for (auto const& [key, val] : node_list) {
+        if (!val->parents.empty()) {
+            std::pair<int, int> edge(key, edge_dict.at(val)->index);
+            edge_index_list.emplace_back(edge);
+        }
+    }
+
+    // output skeleton
+    std::ofstream out("d:\\temp\\skeleton.txt");
+    out.precision(std::numeric_limits<double>::digits10 + 2);
+    out << "# " << node_list.size() << " " << edge_index_list.size() << std::endl;
+    for (auto& n : node_list) {
+        out << unscaled<double>(n.second->state.result_on_layer)(0) << " "
+            << unscaled<double>(n.second->state.result_on_layer)(1) << " "
+            << layer_z(slicing_params, config, n.second->state.layer_idx)
+            << std::endl;
+    }
+
+    for (auto& e : edge_index_list) {
+        out << e.first << " "
+            << e.second << std::endl;
+    }
+#endif // 1
     return cummulative_mesh;
 }
 

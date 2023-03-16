@@ -248,6 +248,8 @@ struct SupportElement
      * Will only be set in the results of createLayerPathing, and will be nullptr inside!
      */
     Polygons                    influence_area;
+
+    size_t                      index;
 };
 
 /*!
