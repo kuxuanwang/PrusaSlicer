@@ -68,7 +68,7 @@ static const t_config_enum_values s_keys_map_PrintHostType {
     { "prusalink",      htPrusaLink },
     { "prusaconnect",   htPrusaConnect },
     { "octoprint",      htOctoPrint },
-    { "mainsail",       htMainSail },
+    { "moonraker",      htMoonraker },
     { "duet",           htDuet },
     { "flashair",       htFlashAir },
     { "astrobox",       htAstroBox },
@@ -1103,6 +1103,30 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert;
     def->set_default_value(new ConfigOptionFloats { 0. });
 
+    def = this->add("filament_multitool_ramming", coBools);
+    def->label = L("Enable ramming for multitool setups");
+    def->tooltip = L("Perform ramming when using multitool printer (i.e. when the 'Single Extruder Multimaterial' in Printer Settings is unchecked). "
+                     "When checked, a small amount of filament is rapidly extruded on the wipe tower just before the toolchange. "
+                     "This option is only used when the wipe tower is enabled.");
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionBools { false });
+
+    def = this->add("filament_multitool_ramming_volume", coFloats);
+    def->label = L("Multitool ramming volume");
+    def->tooltip = L("The volume to be rammed before the toolchange.");
+    def->sidetext = L("mm³");
+    def->min = 0;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloats { 10. });
+
+    def = this->add("filament_multitool_ramming_flow", coFloats);
+    def->label = L("Multitool ramming flow");
+    def->tooltip = L("Flow used for ramming the filament before the toolchange.");
+    def->sidetext = L("mm³/s");
+    def->min = 0;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloats { 10. });
+
     def = this->add("filament_diameter", coFloats);
     def->label = L("Diameter");
     def->tooltip = L("Enter your filament diameter here. Good precision is required, so use a caliper "
@@ -1621,6 +1645,17 @@ void PrintConfigDef::init_fff_params()
     def->mode = comExpert;
     def->set_default_value(new ConfigOptionFloat(0.));
 
+    def = this->add("mmu_segmented_region_interlocking_depth", coFloat);
+    def->label = L("Interlocking depth of a segmented region");
+    def->tooltip = L("Interlocking depth of a segmented region. It will be ignored if "
+                       "\"mmu_segmented_region_max_width\" is zero or if \"mmu_segmented_region_interlocking_depth\""
+                       "is bigger then \"mmu_segmented_region_max_width\". Zero disables this feature.");
+    def->sidetext = L("mm (zero to disable)");
+    def->min = 0;
+    def->category = L("Advanced");
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
     def = this->add("ironing", coBool);
     def->label = L("Enable ironing");
     def->tooltip = L("Enable ironing of the top layers with the hot print head for smooth surface");
@@ -1953,7 +1988,7 @@ void PrintConfigDef::init_fff_params()
         { "prusalink",      "PrusaLink" },
         { "prusaconnect",   "PrusaConnect" },
         { "octoprint",      "OctoPrint" },
-        { "mainsail",       "Mainsail/Fluidd" },
+        { "moonraker",      "Klipper (via Moonraker)" },
         { "duet",           "Duet" },
         { "flashair",       "FlashAir" },
         { "astrobox",       "AstroBox" },
@@ -1983,7 +2018,7 @@ void PrintConfigDef::init_fff_params()
     def->tooltip = L("You can use all configuration options as variables inside this template. "
                    "For example: [layer_height], [fill_density] etc. You can also use [timestamp], "
                    "[year], [month], [day], [hour], [minute], [second], [version], [input_filename], "
-                   "[input_filename_base].");
+                   "[input_filename_base], [default_output_extension].");
     def->full_width = true;
     def->mode = comExpert;
     def->set_default_value(new ConfigOptionString("[input_filename_base].gcode"));
@@ -3235,6 +3270,27 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(10.));
 
+    def = this->add("wipe_tower_extruder", coInt);
+    def->label = L("Wipe tower extruder");
+    def->category = L("Extruders");
+    def->tooltip = L("The extruder to use when printing perimeter of the wipe tower. "
+                     "Set to 0 to use the one that is available (non-soluble would be preferred).");
+    def->min = 0;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(0));
+
+    def = this->add("solid_infill_every_layers", coInt);
+    def->label = L("Solid infill every");
+    def->category = L("Infill");
+    def->tooltip = L("This feature allows to force a solid layer every given number of layers. "
+                   "Zero to disable. You can set this to any value (for example 9999); "
+                   "Slic3r will automatically choose the maximum possible number of layers "
+                   "to combine according to nozzle diameter and layer height.");
+    def->sidetext = L("layers");
+    def->min = 0;
+    def->mode = comExpert;
+    def->set_default_value(new ConfigOptionInt(0));
+
     def = this->add("xy_size_compensation", coFloat);
     def->label = L("XY Size Compensation");
     def->category = L("Advanced");
@@ -3344,7 +3400,8 @@ void PrintConfigDef::init_fff_params()
     // Declare retract values for filament profile, overriding the printer's extruder profile.
     for (const char *opt_key : {
         // floats
-        "retract_length", "retract_lift", "retract_lift_above", "retract_lift_below", "retract_speed", "deretract_speed", "retract_restart_extra", "retract_before_travel",
+        "retract_length", "retract_lift", "retract_lift_above", "retract_lift_below", "retract_speed",
+        "deretract_speed", "retract_restart_extra", "retract_before_travel", "retract_length_toolchange", "retract_restart_extra_toolchange",
         // bools
         "retract_layer_change", "wipe",
         // percents
@@ -3383,10 +3440,12 @@ void PrintConfigDef::init_extruder_option_keys()
         "retract_before_wipe",
         "retract_layer_change",
         "retract_length",
+        "retract_length_toolchange",
         "retract_lift",
         "retract_lift_above",
         "retract_lift_below",
         "retract_restart_extra",
+        "retract_restart_extra_toolchange",
         "retract_speed",
         "wipe"
     };
@@ -4193,6 +4252,9 @@ void PrintConfigDef::handle_legacy(t_config_option_key &opt_key, std::string &va
         else if (value == "marlinfirmware")
             // the "new" marlin firmware flavor used to be called "marlinfirmware" for some time during PrusaSlicer 2.4.0-alpha development.
             value = "marlin2";
+    } else if (opt_key == "host_type" && value == "mainsail") {
+        // the "mainsail" key (introduced in 2.6.0-alpha6) was renamed to "moonraker" (in 2.6.0-rc1).
+        value = "moonraker";
     } else if (opt_key == "fill_density" && value.find("%") == std::string::npos) {
         try {
             // fill_density was turned into a percent value
@@ -4261,6 +4323,13 @@ void PrintConfigDef::handle_legacy(t_config_option_key &opt_key, std::string &va
     }
 }
 
+// Called after a config is loaded as a whole.
+// Perform composite conversions, for example merging multiple keys into one key.
+// Don't convert single options here, implement such conversion in PrintConfigDef::handle_legacy() instead.
+void PrintConfigDef::handle_legacy_composite(DynamicPrintConfig &config)
+{
+}
+
 const PrintConfigDef print_config_def;
 
 DynamicPrintConfig DynamicPrintConfig::full_print_config()
@@ -4323,6 +4392,14 @@ void DynamicPrintConfig::normalize_fdm()
             // if (!this->has("support_material_interface_extruder"))
             //     this->option("support_material_interface_extruder", true)->setInt(extruder);
         }
+    }
+
+    if (this->has("wipe_tower_extruder")) {
+        // If invalid, replace with 0.
+        int extruder = this->opt<ConfigOptionInt>("wipe_tower_extruder")->value;
+        int num_extruders = this->opt<ConfigOptionFloats>("nozzle_diameter")->size();
+        if (extruder < 0 || extruder > num_extruders)
+            this->option("wipe_tower_extruder")->setInt(0);
     }
 
     if (!this->has("solid_infill_extruder") && this->has("infill_extruder"))
@@ -4619,9 +4696,11 @@ std::string validate(const FullPrintConfig &cfg)
     BOOST_PP_SEQ_FOR_EACH(PRINT_CONFIG_CACHE_ELEMENT_DEFINITION, _, BOOST_PP_TUPLE_TO_SEQ(CLASSES_SEQ)) \
     int print_config_static_initializer() { \
         /* Putting a trace here to avoid the compiler to optimize out this function. */ \
-        BOOST_LOG_TRIVIAL(trace) << "Initializing StaticPrintConfigs"; \
+        /*BOOST_LOG_TRIVIAL(trace) << "Initializing StaticPrintConfigs";*/ \
+        /* Tamas: alternative solution through a static volatile int. Boost log pollutes stdout and prevents tests from generating clean output */ \
+        static volatile int ret = 1; \
         BOOST_PP_SEQ_FOR_EACH(PRINT_CONFIG_CACHE_ELEMENT_INITIALIZATION, _, BOOST_PP_TUPLE_TO_SEQ(CLASSES_SEQ)) \
-        return 1; \
+        return ret; \
     }
 PRINT_CONFIG_CACHE_INITIALIZE((
     PrintObjectConfig, PrintRegionConfig, MachineEnvelopeConfig, GCodeConfig, PrintConfig, FullPrintConfig, 
@@ -4917,15 +4996,6 @@ Points get_bed_shape(const DynamicPrintConfig &config)
     return to_points(bed_shape_opt->values);
 }
 
-void get_bed_shape(const DynamicPrintConfig &cfg, arrangement::ArrangeBed &out)
-{
-    if (is_XL_printer(cfg)) {
-        out = arrangement::SegmentedRectangleBed{get_extents(get_bed_shape(cfg)), 4, 4};
-    } else {
-        out = arrangement::to_arrange_bed(get_bed_shape(cfg));
-    }
-}
-
 Points get_bed_shape(const PrintConfig &cfg)
 {
     return to_points(cfg.bed_shape.values);
@@ -4950,21 +5020,21 @@ std::string get_sla_suptree_prefix(const DynamicPrintConfig &config)
     return slatree;
 }
 
-static bool is_XL_printer(const std::string& printer_model)
+static bool is_XL_printer(const std::string& printer_notes)
 {
-    static constexpr const char *ALIGN_ONLY_FOR = "XL";
-    return boost::algorithm::contains(printer_model, ALIGN_ONLY_FOR);
+    return boost::algorithm::contains(printer_notes, "PRINTER_VENDOR_PRUSA3D")
+        && boost::algorithm::contains(printer_notes, "PRINTER_MODEL_XL");
 }
 
 bool is_XL_printer(const DynamicPrintConfig &cfg)
 {
-    auto *printer_model = cfg.opt<ConfigOptionString>("printer_model");
-    return printer_model && is_XL_printer(printer_model->value);    
+    auto *printer_notes = cfg.opt<ConfigOptionString>("printer_notes");
+    return printer_notes && is_XL_printer(printer_notes->value);
 }
 
 bool is_XL_printer(const PrintConfig &cfg)
 {
-    return is_XL_printer(cfg.printer_model.value);
+    return is_XL_printer(cfg.printer_notes.value);
 }
 
 } // namespace Slic3r

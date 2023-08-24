@@ -132,6 +132,7 @@ public:
     void select_view(const std::string& direction);
     void set_drop_target(wxDropTarget* target);
 
+    void load_gcode_shells();
     void load_print(bool keep_z_range = false);
     void reload_print(bool keep_volumes = false);
     void refresh_print();
@@ -150,6 +151,8 @@ public:
     void hide_layers_slider();
 
     void set_keep_current_preview_type(bool value) { m_keep_current_preview_type = value; }
+
+    void set_layers_slider_values_range(int bottom, int top);
 
 private:
     bool init(wxWindow* parent, Bed3D& bed, Model* model);

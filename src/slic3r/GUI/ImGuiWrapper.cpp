@@ -67,6 +67,7 @@ static const std::map<const wchar_t, std::string> font_icons = {
     {ImGui::InfoMarkerSmall       , "notification_info"             },
     {ImGui::PlugMarker            , "plug"                          },
     {ImGui::DowelMarker           , "dowel"                         },
+    {ImGui::SnapMarker            , "snap"                          },
 };
 
 static const std::map<const wchar_t, std::string> font_icons_large = {
@@ -177,7 +178,7 @@ void ImGuiWrapper::set_language(const std::string &language)
     m_font_cjk = false;
     if (lang == "cs" || lang == "pl" || lang == "hu") {
         ranges = ranges_latin2;
-    } else if (lang == "ru" || lang == "uk") {
+    } else if (lang == "ru" || lang == "uk" || lang == "be") {
         ranges = ImGui::GetIO().Fonts->GetGlyphRangesCyrillic(); // Default + about 400 Cyrillic characters
     } else if (lang == "tr") {
         ranges = ranges_turkish;
@@ -639,6 +640,8 @@ bool ImGuiWrapper::slider_float(const char* label, float* v, float v_min, float 
     m_last_slider_status.edited = ImGui::IsItemEdited();
     m_last_slider_status.clicked = ImGui::IsItemClicked();
     m_last_slider_status.deactivated_after_edit = ImGui::IsItemDeactivatedAfterEdit();
+    if (!m_last_slider_status.can_take_snapshot)
+        m_last_slider_status.can_take_snapshot = ImGui::IsItemClicked();
 
     if (!tooltip.empty() && ImGui::IsItemHovered())
         this->tooltip(into_u8(tooltip).c_str(), max_tooltip_width);
@@ -774,27 +777,33 @@ bool ImGuiWrapper::image_button(const wchar_t icon, const wxString& tooltip)
     return res;
 }
 
-bool ImGuiWrapper::combo(const wxString& label, const std::vector<std::string>& options, int& selection, ImGuiComboFlags flags)
+bool ImGuiWrapper::combo(const wxString& label, const std::vector<std::string>& options, int& selection, ImGuiComboFlags flags/* = 0*/, float label_width/* = 0.0f*/, float item_width/* = 0.0f*/)
+{
+    return combo(into_u8(label), options, selection, flags, label_width, item_width);
+}
+
+bool ImGuiWrapper::combo(const std::string& label, const std::vector<std::string>& options, int& selection, ImGuiComboFlags flags/* = 0*/, float label_width/* = 0.0f*/, float item_width/* = 0.0f*/)
 {
     // this is to force the label to the left of the widget:
     if (!label.empty()) {
         text(label);
-        ImGui::SameLine();
+        ImGui::SameLine(label_width);
     }
+    ImGui::PushItemWidth(item_width);
 
     int selection_out = selection;
     bool res = false;
 
     const char *selection_str = selection < int(options.size()) && selection >= 0 ? options[selection].c_str() : "";
-    if (ImGui::BeginCombo("", selection_str, flags)) {
+    if (ImGui::BeginCombo(("##" + label).c_str(), selection_str, flags)) {
         for (int i = 0; i < (int)options.size(); i++) {
             if (ImGui::Selectable(options[i].c_str(), i == selection)) {
                 selection_out = i;
+                res = true;
             }
         }
 
         ImGui::EndCombo();
-        res = true;
     }
 
     selection = selection_out;

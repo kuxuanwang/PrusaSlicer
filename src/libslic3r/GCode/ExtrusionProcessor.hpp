@@ -146,67 +146,68 @@ std::vector<ExtendedPoint> estimate_points_properties(const POINTS              
     std::vector<float> angles_for_curvature(points.size());
     std::vector<float> distances_for_curvature(points.size());
 
-    for (int point_idx = 0; point_idx < int(points.size()); ++point_idx) {
+    for (size_t point_idx = 0; point_idx < points.size(); ++point_idx) {
         ExtendedPoint &a    = points[point_idx];
-        ExtendedPoint &prev = points[point_idx > 0 ? point_idx - 1 : point_idx];
+        size_t         prev = prev_idx_modulo(point_idx, points.size());
+        size_t         next = next_idx_modulo(point_idx, points.size());
 
-        int prev_point_idx = point_idx;
-        while (prev_point_idx > 0) {
-            prev_point_idx--;
-            if ((a.position - points[prev_point_idx].position).squaredNorm() > EPSILON) {
-                break;
-            }
+        int iter_limit = points.size();
+        while ((a.position - points[prev].position).squaredNorm() < 1 && iter_limit > 0) {
+            prev = prev_idx_modulo(prev, points.size());
+            iter_limit--;
         }
 
-        int next_point_index = point_idx;
-        while (next_point_index < int(points.size()) - 1) {
-            next_point_index++;
-            if ((a.position - points[next_point_index].position).squaredNorm() > EPSILON) {
-                break;
-            }
+        while ((a.position - points[next].position).squaredNorm() < 1 && iter_limit > 0) {
+            next = next_idx_modulo(next, points.size());
+            iter_limit--;
         }
 
-        distances_for_curvature[point_idx] = (prev.position - a.position).norm();
-        if (prev_point_idx != point_idx && next_point_index != point_idx) {
-            float alfa = angle(a.position - points[prev_point_idx].position, points[next_point_index].position - a.position);
-            angles_for_curvature[point_idx] = alfa;
-        } // else keep zero
+        distances_for_curvature[point_idx] = (points[prev].position - a.position).norm();
+        float alfa                         = angle(a.position - points[prev].position, points[next].position - a.position);
+        angles_for_curvature[point_idx]    = alfa;
     }
 
-    for (float window_size : {3.0f, 9.0f, 16.0f}) {
-        size_t tail_point      = 0;
-        float  tail_window_acc = 0;
-        float  tail_angle_acc  = 0;
+    if (std::accumulate(distances_for_curvature.begin(), distances_for_curvature.end(), 0) > EPSILON)
+        for (float window_size : {3.0f, 9.0f, 16.0f}) {
+            size_t tail_point      = 0;
+            float  tail_window_acc = 0;
+            float  tail_angle_acc  = 0;
 
-        size_t head_point      = 0;
-        float  head_window_acc = 0;
-        float  head_angle_acc  = 0;
+            size_t head_point      = 0;
+            float  head_window_acc = 0;
+            float  head_angle_acc  = 0;
 
-        for (int point_idx = 0; point_idx < int(points.size()); ++point_idx) {
-            if (point_idx > 0) {
-                tail_window_acc += distances_for_curvature[point_idx - 1];
-                tail_angle_acc += angles_for_curvature[point_idx - 1];
-                head_window_acc -= distances_for_curvature[point_idx - 1];
-                head_angle_acc -= angles_for_curvature[point_idx - 1];
-            }
-            while (tail_window_acc > window_size * 0.5 && tail_point < point_idx) {
-                tail_window_acc -= distances_for_curvature[tail_point];
-                tail_angle_acc -= angles_for_curvature[tail_point];
-                tail_point++;
-            }
+            for (size_t point_idx = 0; point_idx < points.size(); ++point_idx) {
+                if (point_idx == 0) {
+                    while (tail_window_acc < window_size * 0.5) {
+                        tail_window_acc += distances_for_curvature[tail_point];
+                        tail_angle_acc += angles_for_curvature[tail_point];
+                        tail_point = prev_idx_modulo(tail_point, points.size());
+                    }
+                }
+                while (tail_window_acc - distances_for_curvature[next_idx_modulo(tail_point, points.size())] > window_size * 0.5) {
+                    tail_point = next_idx_modulo(tail_point, points.size());
+                    tail_window_acc -= distances_for_curvature[tail_point];
+                    tail_angle_acc -= angles_for_curvature[tail_point];
+                }
 
-            while (head_window_acc < window_size * 0.5 && head_point < int(points.size()) - 1) {
-                head_window_acc += distances_for_curvature[head_point];
-                head_angle_acc += angles_for_curvature[head_point];
-                head_point++;
-            }
+                while (head_window_acc < window_size * 0.5) {
+                    head_point = next_idx_modulo(head_point, points.size());
+                    head_window_acc += distances_for_curvature[head_point];
+                    head_angle_acc += angles_for_curvature[head_point];
+                }
 
-            float curvature = (tail_angle_acc + head_angle_acc) / (tail_window_acc + head_window_acc);
-            if (std::abs(curvature) > std::abs(points[point_idx].curvature)) {
-                points[point_idx].curvature = curvature;
+                float curvature = (tail_angle_acc + head_angle_acc) / window_size;
+                if (std::abs(curvature) > std::abs(points[point_idx].curvature)) {
+                    points[point_idx].curvature = curvature;
+                }
+
+                tail_window_acc += distances_for_curvature[point_idx];
+                tail_angle_acc += angles_for_curvature[point_idx];
+                head_window_acc -= distances_for_curvature[point_idx];
+                head_angle_acc -= angles_for_curvature[point_idx];
             }
         }
-    }
 
     return points;
 }
@@ -274,19 +275,51 @@ public:
             const ExtendedPoint &curr = extended_points[i];
             const ExtendedPoint &next = extended_points[i + 1 < extended_points.size() ? i + 1 : i];
 
+            // The following code artifically increases the distance to provide slowdown for extrusions that are over curled lines
             float artificial_distance_to_curled_lines = 0.0;
+            const double dist_limit = 10.0 * path.width;
             {
-                Vec2d middle       = 0.5 * (curr.position + next.position);
-                auto  line_indices = prev_curled_extrusions[current_object].all_lines_in_radius(Point::new_scale(middle),
-                                                                                                scale_(10.0 * path.width));
+                Vec2d middle = 0.5 * (curr.position + next.position);
+                auto line_indices = prev_curled_extrusions[current_object].all_lines_in_radius(Point::new_scale(middle), scale_(dist_limit));
+                if (!line_indices.empty()) {
+                    double len   = (next.position - curr.position).norm();
+                    // For long lines, there is a problem with the additional slowdown. If by accident, there is small curled line near the middle of this long line
+                    //  The whole segment gets slower unnecesarily. For these long lines, we do additional check whether it is worth slowing down.
+                    // NOTE that this is still quite rough approximation, e.g. we are still checking lines only near the middle point
+                    // TODO maybe split the lines into smaller segments before running this alg? but can be demanding, and GCode will be huge
+                    if (len > 8) {
+                        Vec2d dir   = Vec2d(next.position - curr.position) / len;
+                        Vec2d right = Vec2d(-dir.y(), dir.x());
 
-                for (size_t idx : line_indices) {
-                    const CurledLine &line                 = prev_curled_extrusions[current_object].get_line(idx);
-                    float             distance_from_curled = unscaled(line_alg::distance_to(line, Point::new_scale(middle)));
-                    float             dist                 = path.width * (1.0 - (distance_from_curled / (10.0 * path.width))) *
-                                 (1.0 - (distance_from_curled / (10.0 * path.width))) *
-                                 (line.curled_height / (path.height * 10.0f)); // max_curled_height_factor from SupportSpotGenerator
-                    artificial_distance_to_curled_lines = std::max(artificial_distance_to_curled_lines, dist);
+                        Polygon box_of_influence = {
+                            scaled(Vec2d(curr.position + right * dist_limit)),
+                            scaled(Vec2d(next.position + right * dist_limit)),
+                            scaled(Vec2d(next.position - right * dist_limit)),
+                            scaled(Vec2d(curr.position - right * dist_limit)),
+                        };
+
+                        double projected_lengths_sum = 0;
+                        for (size_t idx : line_indices) {
+                            const CurledLine &line   = prev_curled_extrusions[current_object].get_line(idx);
+                            Lines             inside = intersection_ln({{line.a, line.b}}, {box_of_influence});
+                            if (inside.empty())
+                                continue;
+                            double projected_length = abs(dir.dot(unscaled(Vec2d((inside.back().b - inside.back().a).cast<double>()))));
+                            projected_lengths_sum += projected_length;
+                        }
+                        if (projected_lengths_sum < 0.4 * len) {
+                            line_indices.clear();
+                        }
+                    }
+
+                    for (size_t idx : line_indices) {
+                        const CurledLine &line                 = prev_curled_extrusions[current_object].get_line(idx);
+                        float             distance_from_curled = unscaled(line_alg::distance_to(line, Point::new_scale(middle)));
+                        float             dist                 = path.width * (1.0 - (distance_from_curled / dist_limit)) *
+                                     (1.0 - (distance_from_curled / dist_limit)) *
+                                     (line.curled_height / (path.height * 10.0f)); // max_curled_height_factor from SupportSpotGenerator
+                        artificial_distance_to_curled_lines = std::max(artificial_distance_to_curled_lines, dist);
+                    }
                 }
             }
 

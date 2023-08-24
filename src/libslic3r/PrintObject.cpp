@@ -670,6 +670,7 @@ bool PrintObject::invalidate_state_by_config_options(
         } else if (
                opt_key == "layer_height"
             || opt_key == "mmu_segmented_region_max_width"
+            || opt_key == "mmu_segmented_region_interlocking_depth"
             || opt_key == "raft_layers"
             || opt_key == "raft_contact_distance"
             || opt_key == "slice_closing_radius"
@@ -814,15 +815,15 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "overhang_speed_2"
             || opt_key == "overhang_speed_3"
             || opt_key == "external_perimeter_speed"
-            || opt_key == "infill_speed"
-            || opt_key == "perimeter_speed"
             || opt_key == "small_perimeter_speed"
             || opt_key == "solid_infill_speed"
             || opt_key == "top_solid_infill_speed") {
             invalidated |= m_print->invalidate_step(psGCodeExport);
         } else if (
                opt_key == "wipe_into_infill"
-            || opt_key == "wipe_into_objects") {
+            || opt_key == "wipe_into_objects"
+            || opt_key == "infill_speed"
+            || opt_key == "perimeter_speed") {
             invalidated |= m_print->invalidate_step(psWipeTower);
             invalidated |= m_print->invalidate_step(psGCodeExport);
         } else {
@@ -1539,21 +1540,33 @@ void PrintObject::discover_vertical_shells()
                             // Finally expand the infill a bit to remove tiny gaps between solid infill and the other regions.
                             narrow_sparse_infill_region_radius - tiny_overlap_radius, ClipperLib::jtSquare);
 
+                        Polygons object_volume;
                         Polygons internal_volume;
                         {
                             Polygons shrinked_bottom_slice = idx_layer > 0 ? to_polygons(m_layers[idx_layer - 1]->lslices) : Polygons{};
                             Polygons shrinked_upper_slice  = (idx_layer + 1) < m_layers.size() ?
                                                                  to_polygons(m_layers[idx_layer + 1]->lslices) :
                                                                  Polygons{};
-                            internal_volume                = intersection(shrinked_bottom_slice, shrinked_upper_slice);
+                            object_volume = intersection(shrinked_bottom_slice, shrinked_upper_slice);
+                            internal_volume = closing(polygonsInternal, SCALED_EPSILON);
                         }
 
-                        // The opening operation may cause scattered tiny drops on the smooth parts of the model, filter them out
+                        // The regularization operation may cause scattered tiny drops on the smooth parts of the model, filter them out
+                        // If the region checks both following conditions, it is removed:
+                        //   1. the area is very small,
+                        //      OR the area is quite small and it is fully wrapped in model (not visible)
+                        //      the in-model condition is there due to small sloping surfaces, e.g. top of the hull of the benchy
+                        //   2. the area does not fully cover an internal polygon
+                        //         This is there mainly for a very thin parts, where the solid layers would be missing if the part area is quite small
                         regularized_shell.erase(std::remove_if(regularized_shell.begin(), regularized_shell.end(),
-                                                               [&min_perimeter_infill_spacing, &internal_volume](const ExPolygon &p) {
-                                                                   return p.area() < min_perimeter_infill_spacing * scaled(1.5) ||
-                                                                          (p.area() < min_perimeter_infill_spacing * scaled(8.0) &&
-                                                                           diff(to_polygons(p), internal_volume).empty());
+                                                               [&internal_volume, &min_perimeter_infill_spacing,
+                                                                &object_volume](const ExPolygon &p) {
+                                                                   return (p.area() < min_perimeter_infill_spacing * scaled(1.5) ||
+                                                                           (p.area() < min_perimeter_infill_spacing * scaled(8.0) &&
+                                                                            diff(to_polygons(p), object_volume).empty())) &&
+                                                                          diff(internal_volume,
+                                                                               expand(to_polygons(p), min_perimeter_infill_spacing))
+                                                                                  .size() >= internal_volume.size();
                                                                }),
                                                 regularized_shell.end());
                     }
@@ -1678,7 +1691,7 @@ void PrintObject::bridge_over_infill()
                         }
                     }
                 }
-                unsupported_area = closing(unsupported_area, SCALED_EPSILON);
+                unsupported_area = closing(unsupported_area, float(SCALED_EPSILON));
                 // By expanding the lower layer solids, we avoid making bridges from the tiny internal overhangs that are (very likely) supported by previous layer solids
                 // NOTE that we cannot filter out polygons worth bridging by their area, because sometimes there is a very small internal island that will grow into large hole
                 lower_layer_solids = shrink(lower_layer_solids, 1 * spacing); // first remove thin regions that will not support anything
@@ -1703,7 +1716,7 @@ void PrintObject::bridge_over_infill()
                                     worth_bridging.push_back(p);
                                 }
                             }
-                            worth_bridging = intersection(closing(worth_bridging, SCALED_EPSILON), s->expolygon);
+                            worth_bridging = intersection(closing(worth_bridging, float(SCALED_EPSILON)), s->expolygon);
                             candidate_surfaces.push_back(CandidateSurface(s, lidx, worth_bridging, region, 0));
 
 #ifdef DEBUG_BRIDGE_OVER_INFILL
@@ -1860,7 +1873,7 @@ void PrintObject::bridge_over_infill()
 
     // cluster layers by depth needed for thick bridges. Each cluster is to be processed by single thread sequentially, so that bridges cannot appear one on another
     std::vector<std::vector<size_t>> clustered_layers_for_threads;
-    float target_flow_height_factor = 0.9;
+    float target_flow_height_factor = 0.9f;
     {
         std::vector<size_t> layers_with_candidates;
         std::map<size_t, Polygons> layer_area_covered_by_candidates;
@@ -1937,9 +1950,9 @@ void PrintObject::bridge_over_infill()
             }
         }
         layers_sparse_infill = union_ex(layers_sparse_infill);
-        layers_sparse_infill = closing_ex(layers_sparse_infill, SCALED_EPSILON);
+        layers_sparse_infill = closing_ex(layers_sparse_infill, float(SCALED_EPSILON));
         not_sparse_infill    = union_ex(not_sparse_infill);
-        not_sparse_infill    = closing_ex(not_sparse_infill, SCALED_EPSILON);
+        not_sparse_infill    = closing_ex(not_sparse_infill, float(SCALED_EPSILON));
         return diff(layers_sparse_infill, not_sparse_infill);
     };
 
@@ -2276,8 +2289,8 @@ void PrintObject::bridge_over_infill()
                         lightning_area.insert(lightning_area.end(), l.begin(), l.end());
                     }
                 }
-                total_fill_area   = closing(total_fill_area, SCALED_EPSILON);
-                expansion_area    = closing(expansion_area, SCALED_EPSILON);
+                total_fill_area   = closing(total_fill_area, float(SCALED_EPSILON));
+                expansion_area    = closing(expansion_area, float(SCALED_EPSILON));
                 expansion_area    = intersection(expansion_area, deep_infill_area);
                 Polylines anchors = intersection_pl(infill_lines[lidx - 1], shrink(expansion_area, spacing));
                 Polygons internal_unsupported_area = shrink(deep_infill_area, spacing * 4.5);
@@ -2595,7 +2608,7 @@ bool PrintObject::update_layer_height_profile(const ModelObject &model_object, c
 
     if (layer_height_profile.empty()) {
         // use the constructor because the assignement is crashing on ASAN OsX
-        layer_height_profile = std::vector<coordf_t>(model_object.layer_height_profile.get());
+        layer_height_profile = model_object.layer_height_profile.get();
 //        layer_height_profile = model_object.layer_height_profile;
         // The layer height returned is sampled with high density for the UI layer height painting
         // and smoothing tool to work.

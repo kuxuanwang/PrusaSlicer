@@ -19,6 +19,9 @@
 #include "SceneRaycaster.hpp"
 #include "GUI_Utils.hpp"
 
+#include "libslic3r/Arrange/ArrangeSettingsDb_AppCfg.hpp"
+#include "ArrangeSettingsDialogImgui.hpp"
+
 #include "libslic3r/Slicing.hpp"
 
 #include <float.h>
@@ -193,6 +196,7 @@ class GLCanvas3D
             Unknown,
             Editing,
             Completed,
+            Paused,
             Num_States
         };
 
@@ -361,7 +365,8 @@ class GLCanvas3D
         ToolpathOutside,
         SlaSupportsOutside,
         SomethingNotShown,
-        ObjectClashed
+        ObjectClashed,
+        GCodeConflict
     };
 
     class RenderStats
@@ -464,6 +469,8 @@ public:
         float accuracy           = 0.65f; // Unused currently
         bool  enable_rotation    = false;
         int   alignment          = 0;
+        int   geometry_handling  = 0;
+        int   strategy = 0;
     };
 
     enum class ESLAViewType
@@ -579,62 +586,41 @@ private:
     SLAView m_sla_view;
     bool m_sla_view_type_detection_active{ false };
 
-    ArrangeSettings m_arrange_settings_fff, m_arrange_settings_sla,
-        m_arrange_settings_fff_seq_print;
-
     bool is_arrange_alignment_enabled() const;
 
-    template<class Self>
-    static auto & get_arrange_settings_ref(Self *self) {
-        PrinterTechnology ptech = self->current_printer_technology();
-
-        auto *ptr = &self->m_arrange_settings_fff;
-
-        if (ptech == ptSLA) {
-            ptr = &self->m_arrange_settings_sla;
-        } else if (ptech == ptFFF) {
-            auto co_opt = self->m_config->template option<ConfigOptionBool>("complete_objects");
-            if (co_opt && co_opt->value)
-                ptr = &self->m_arrange_settings_fff_seq_print;
-            else
-                ptr = &self->m_arrange_settings_fff;
-        }
-
-        return *ptr;
-    }
+    ArrangeSettingsDb_AppCfg   m_arrange_settings_db;
+    ArrangeSettingsDialogImgui m_arrange_settings_dialog;
 
 public:
-    ArrangeSettings get_arrange_settings() const {
-        const ArrangeSettings &settings = get_arrange_settings_ref(this);
-        ArrangeSettings ret = settings;
-        if (&settings == &m_arrange_settings_fff_seq_print) {
-            ret.distance = std::max(ret.distance,
-                                    float(min_object_distance(*m_config)));
-        }
 
-        if (!is_arrange_alignment_enabled())
-            ret.alignment = -1;
+    struct ContoursList
+    {
+        // list of unique contours
+        Polygons contours;
+        // if defined: list of transforms to apply to contours
+        std::optional<std::vector<std::pair<size_t, Transform3d>>> trafos;
 
-        return ret;
-    }
+        bool empty() const { return contours.empty(); }
+    };
 
 private:
-    void load_arrange_settings();
 
     class SequentialPrintClearance
     {
         GLModel m_fill;
-        GLModel m_perimeter;
-        bool m_render_fill{ true };
-        bool m_visible{ false };
+        // list of unique contours
+        std::vector<GLModel> m_contours;
+        // list of transforms used to render the contours
+        std::vector<std::pair<size_t, Transform3d>> m_instances;
+        bool m_evaluating{ false };
 
-        std::vector<Pointf3s> m_hull_2d_cache;
+        std::vector<std::pair<Pointf3s, Transform3d>> m_hulls_2d_cache;
 
     public:
-        void set_polygons(const Polygons& polygons);
-        void set_render_fill(bool render_fill) { m_render_fill = render_fill; }
-        void set_visible(bool visible) { m_visible = visible; }
+        void set_contours(const ContoursList& contours, bool generate_fill);
+        void update_instances_trafos(const std::vector<Transform3d>& trafos);
         void render();
+        bool empty() const { return m_contours.empty(); }
 
         friend class GLCanvas3D;
     };
@@ -724,8 +710,16 @@ public:
     unsigned int get_volumes_count() const;
     const GLVolumeCollection& get_volumes() const { return m_volumes; }
     void reset_volumes();
-    ModelInstanceEPrintVolumeState check_volumes_outside_state() const;
+    ModelInstanceEPrintVolumeState check_volumes_outside_state(bool selection_only = true) const;
+    // update the is_outside state of all the volumes contained in the given collection
+    void check_volumes_outside_state(GLVolumeCollection& volumes) const;
 
+private:
+    // returns true if all the volumes are completely contained in the print volume
+    // returns the containment state in the given out_state, if non-null
+    bool check_volumes_outside_state(GLVolumeCollection& volumes, ModelInstanceEPrintVolumeState* out_state, bool selection_only = true) const;
+
+public:
     void init_gcode_viewer() { m_gcode_viewer.init(); }
     void reset_gcode_toolpaths() { m_gcode_viewer.reset(); }
     const GCodeViewer::SequentialView& get_gcode_sequential_view() const { return m_gcode_viewer.get_sequential_view(); }
@@ -737,9 +731,12 @@ public:
     void update_instance_printable_state_for_objects(const std::vector<size_t>& object_idxs);
 
     void set_config(const DynamicPrintConfig* config);
+    const DynamicPrintConfig *config() const { return m_config; }
     void set_process(BackgroundSlicingProcess* process);
     void set_model(Model* model);
     const Model* get_model() const { return m_model; }
+
+    const arr2::ArrangeSettingsView * get_arrange_settings_view() const { return &m_arrange_settings_dialog; }
 
     const Selection& get_selection() const { return m_selection; }
     Selection& get_selection() { return m_selection; }
@@ -837,6 +834,7 @@ public:
 
     void reload_scene(bool refresh_immediately, bool force_full_scene_refresh = false);
 
+    void load_gcode_shells();
     void load_gcode_preview(const GCodeProcessorResult& gcode_result, const std::vector<std::string>& str_tool_colors);
     void refresh_gcode_preview_render_paths(bool keep_sequential_current_first, bool keep_sequential_current_last);
     void set_gcode_view_preview_type(GCodeViewer::EViewType type) { return m_gcode_viewer.set_view_type(type); }
@@ -902,8 +900,11 @@ public:
         inline const Vec2d& pos() const { return m_pos; }
         inline double rotation() const { return m_rotation; }
         inline const Vec2d bb_size() const { return m_bb.size(); }
+        inline const BoundingBoxf& bounding_box() const { return m_bb; }
         
         void apply_wipe_tower() const;
+
+        static void apply_wipe_tower(Vec2d pos, double rot);
     };
     
     WipeTowerInfo get_wipe_tower_info() const;
@@ -958,24 +959,24 @@ public:
     }
 
     void reset_sequential_print_clearance() {
-        m_sequential_print_clearance.set_visible(false);
-        m_sequential_print_clearance.set_render_fill(false);
-        m_sequential_print_clearance.set_polygons(Polygons());
+        m_sequential_print_clearance.m_evaluating = false;
+        m_sequential_print_clearance.set_contours(ContoursList(), false);
     }
 
-    void set_sequential_print_clearance_visible(bool visible) {
-        m_sequential_print_clearance.set_visible(visible);
+    void set_sequential_print_clearance_contours(const ContoursList& contours, bool generate_fill) {
+        m_sequential_print_clearance.set_contours(contours, generate_fill);
     }
 
-    void set_sequential_print_clearance_render_fill(bool render_fill) {
-        m_sequential_print_clearance.set_render_fill(render_fill);
+    bool is_sequential_print_clearance_empty() const {
+        return m_sequential_print_clearance.empty();
     }
 
-    void set_sequential_print_clearance_polygons(const Polygons& polygons) {
-        m_sequential_print_clearance.set_polygons(polygons);
+    bool is_sequential_print_clearance_evaluating() const {
+        return m_sequential_print_clearance.m_evaluating;
     }
 
-    void update_sequential_clearance();
+    void update_sequential_clearance(bool force_contours_generation);
+    void set_sequential_clearance_as_evaluating() { m_sequential_print_clearance.m_evaluating = true; }
 
     const Print* fff_print() const;
     const SLAPrint* sla_print() const;
@@ -988,6 +989,7 @@ public:
 
     std::pair<SlicingParameters, const std::vector<double>> get_layers_height_data(int object_id);
 
+    void detect_sla_view_type();
     void set_sla_view_type(ESLAViewType type);
     void set_sla_view_type(const GLVolume::CompositeID& id, ESLAViewType type);
     void enable_sla_view_type_detection() { m_sla_view_type_detection_active = true; }

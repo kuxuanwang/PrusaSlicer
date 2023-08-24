@@ -54,6 +54,7 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Color.hpp"
+#include "libslic3r/Format/SLAArchiveFormatRegistry.hpp"
 
 #include "GUI.hpp"
 #include "GUI_Utils.hpp"
@@ -490,15 +491,13 @@ static const FileWildcards file_wildcards_by_type[FT_SIZE] = {
 
     /* FT_TEX */     { "Texture"sv,         { ".png"sv, ".svg"sv } },
 
-    /* FT_SL1 */     { "Masked SLA files"sv, { ".sl1"sv, ".sl1s"sv, ".pwmx"sv } },
+    /* FT_SL1 (deprecated, overriden by sla_wildcards) */     { "Masked SLA files"sv, { ".sl1"sv, ".sl1s"sv, ".pwmx"sv } },
 
     /* FT_ZIP */     { "Zip files"sv, { ".zip"sv } },
 };
 
-#if ENABLE_ALTERNATIVE_FILE_WILDCARDS_GENERATOR
-wxString file_wildcards(FileType file_type)
+static wxString file_wildcards(const FileWildcards& data)
 {
-    const FileWildcards& data = file_wildcards_by_type[file_type];
     std::string title;
     std::string mask;
 
@@ -531,6 +530,14 @@ wxString file_wildcards(FileType file_type)
     }
 
     return ret;
+}
+
+#if ENABLE_ALTERNATIVE_FILE_WILDCARDS_GENERATOR
+wxString file_wildcards(FileType file_type)
+{
+    const FileWildcards& data = file_wildcards_by_type[file_type];
+
+    return file_wildcards(data);
 }
 #else
 // This function produces a Win32 file dialog file template mask to be consumed by wxWidgets on all platforms.
@@ -589,6 +596,35 @@ wxString file_wildcards(FileType file_type, const std::string &custom_extension)
     return GUI::format_wxstr("%s (%s)|%s", data.title, title, mask);
 }
 #endif // ENABLE_ALTERNATIVE_FILE_WILDCARDS_GENERATOR
+
+wxString sla_wildcards(const char *formatid)
+{
+    const ArchiveEntry *entry = get_archive_entry(formatid);
+    wxString ret;
+
+    if (entry) {
+        FileWildcards wc;
+        std::string tr_title = I18N::translate_utf8(entry->desc);
+        // TRN %s = type of file
+        tr_title = GUI::format(_u8L("%s files"), tr_title);
+        wc.title = tr_title;
+
+        std::vector<std::string> exts = get_extensions(*entry);
+
+        wc.file_extensions.reserve(exts.size());
+        for (std::string &ext : exts) {
+            ext.insert(ext.begin(), '.');
+            wc.file_extensions.emplace_back(ext);
+        }
+
+        ret = file_wildcards(wc);
+    }
+
+    if (ret.empty())
+        ret = file_wildcards(FT_SL1);
+
+    return ret;
+}
 
 static std::string libslic3r_translate_callback(const char *s) { return wxGetTranslation(wxString(s, wxConvUTF8)).utf8_str().data(); }
 
@@ -924,9 +960,9 @@ void GUI_App::init_app_config()
 {
 	// Profiles for the alpha are stored into the PrusaSlicer-alpha directory to not mix with the current release.
 
-//  SetAppName(SLIC3R_APP_KEY);
+    SetAppName(SLIC3R_APP_KEY);
 //	SetAppName(SLIC3R_APP_KEY "-alpha");
-    SetAppName(SLIC3R_APP_KEY "-beta");
+//  SetAppName(SLIC3R_APP_KEY "-beta");
 
 
 //	SetAppDisplayName(SLIC3R_APP_NAME);
@@ -1696,6 +1732,24 @@ void GUI_App::set_label_clr_sys(const wxColour& clr)
     app_config->set("label_clr_sys", str);
 }
 
+const std::string GUI_App::get_html_bg_color(wxWindow* html_parent)
+{
+    wxColour    bgr_clr = html_parent->GetBackgroundColour();
+#ifdef __APPLE__
+    // On macOS 10.13 and older the background color returned by wxWidgets
+    // is wrong, which leads to https://github.com/prusa3d/PrusaSlicer/issues/7603
+    // and https://github.com/prusa3d/PrusaSlicer/issues/3775. wxSYS_COLOUR_WINDOW
+    // may not match the window background exactly, but it seems to never end up
+    // as black on black.
+
+    if (wxPlatformInfo::Get().GetOSMajorVersion() == 10
+        && wxPlatformInfo::Get().GetOSMinorVersion() < 14)
+        bgr_clr = wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW);
+#endif
+
+    return encode_color(ColorRGB(bgr_clr.Red(), bgr_clr.Green(), bgr_clr.Blue()));
+}
+
 const std::string& GUI_App::get_mode_btn_color(int mode_id)
 {
     assert(0 <= mode_id && size_t(mode_id) < m_mode_palette.size());
@@ -2281,14 +2335,7 @@ bool GUI_App::load_language(wxString language, bool initial)
     }
 #endif
 
-#ifdef __APPLE__
-    // ysFIXME after fix for wxWidgets issue (https://github.com/wxWidgets/wxWidgets/issues/23209)
-    // Workaround for wxLANGUAGE_CHINESE(...) languages => Allow to continue even if wxLocale is not available.
-    // Because of translation will works fine, just locales will set to EN 
-    if (! wxLocale::IsAvailable(language_info->Language) && language_info->CanonicalName.BeforeFirst('_') != "zh" ) {
-#else
     if (! wxLocale::IsAvailable(language_info->Language)) {
-#endif
     	// Loading the language dictionary failed.
     	wxString message = "Switching PrusaSlicer to language " + language_info->CanonicalName + " failed.";
 #if !defined(_WIN32) && !defined(__APPLE__)

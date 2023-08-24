@@ -2108,9 +2108,9 @@ void NotificationManager::push_slicing_error_notification(const std::string& tex
 	push_notification_data({ NotificationType::SlicingError, NotificationLevel::ErrorNotificationLevel, 0,  _u8L("ERROR:") + "\n" + text }, 0);
 	set_slicing_progress_hidden();
 }
-void NotificationManager::push_slicing_warning_notification(const std::string& text, bool gray, ObjectID oid, int warning_step)
+void NotificationManager::push_slicing_warning_notification(const std::string& text, bool gray, ObjectID oid, int warning_step, const std::string& hypertext, std::function<bool(wxEvtHandler*)> callback)
 {
-	NotificationData data { NotificationType::SlicingWarning, NotificationLevel::WarningNotificationLevel, 0,  _u8L("WARNING:") + "\n" + text };
+	NotificationData data { NotificationType::SlicingWarning, NotificationLevel::WarningNotificationLevel, 0,  _u8L("WARNING:") + "\n" + text ,  hypertext, callback};
 
 	auto notification = std::make_unique<NotificationManager::ObjectIDNotification>(data, m_id_provider, m_evt_handler);
 	notification->object_id = oid;
@@ -2218,7 +2218,6 @@ void NotificationManager::push_version_notification(NotificationType type, Notif
 
 	for (std::unique_ptr<PopNotification>& notification : m_pop_notifications) {
 		// NoNewReleaseAvailable must not show if alfa / beta is on.
-		NotificationType nttype = notification->get_type();
 		if (type == NotificationType::NoNewReleaseAvailable
 			&& (notification->get_type() == NotificationType::NewAlphaAvailable 
 				|| notification->get_type() == NotificationType::NewBetaAvailable)) {

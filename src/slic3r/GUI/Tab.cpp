@@ -216,10 +216,10 @@ void Tab::create_preset_tab()
         m_mode_sizer = new ModeSizer(panel, int (0.5*em_unit(this)));
 
     const float scale_factor = em_unit(this)*0.1;// GetContentScaleFactor();
-    m_hsizer = new wxBoxSizer(wxHORIZONTAL);
-    sizer->Add(m_hsizer, 0, wxEXPAND | wxBOTTOM, 3);
-    m_hsizer->Add(m_presets_choice, 0, wxLEFT | wxRIGHT | wxTOP | wxALIGN_CENTER_VERTICAL, 3);
-    m_hsizer->AddSpacer(int(4*scale_factor));
+    m_top_hsizer = new wxBoxSizer(wxHORIZONTAL);
+    sizer->Add(m_top_hsizer, 0, wxEXPAND | wxBOTTOM | wxALIGN_CENTER_VERTICAL, 3);
+    m_top_hsizer->Add(m_presets_choice, 0, wxLEFT | wxRIGHT | wxTOP | wxALIGN_CENTER_VERTICAL, 3);
+    m_top_hsizer->AddSpacer(int(4*scale_factor));
 
     m_h_buttons_sizer = new wxBoxSizer(wxHORIZONTAL);
     m_h_buttons_sizer->Add(m_btn_save_preset, 0, wxALIGN_CENTER_VERTICAL);
@@ -243,9 +243,8 @@ void Tab::create_preset_tab()
     m_h_buttons_sizer->AddSpacer(int(8*scale_factor));
     m_h_buttons_sizer->Add(m_btn_compare_preset, 0, wxALIGN_CENTER_VERTICAL);
 
-    m_hsizer->Add(m_h_buttons_sizer, 1, wxEXPAND);
-    m_hsizer->AddSpacer(int(16*scale_factor));
-    // m_hsizer->AddStretchSpacer(32);
+    m_top_hsizer->Add(m_h_buttons_sizer, 1, wxEXPAND | wxALIGN_CENTRE_VERTICAL);
+    m_top_hsizer->AddSpacer(int(16*scale_factor));
     // StretchSpacer has a strange behavior under OSX, so
     // There is used just additional sizer for m_mode_sizer with right alignment
     if (m_mode_sizer) {
@@ -253,8 +252,10 @@ void Tab::create_preset_tab()
         // Don't set the 2nd parameter to 1, making the sizer rubbery scalable in Y axis may lead 
         // to wrong vertical size assigned to wxBitmapComboBoxes, see GH issue #7176.
         mode_sizer->Add(m_mode_sizer, 0, wxALIGN_RIGHT);
-        m_hsizer->Add(mode_sizer, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, wxOSX ? 15 : 10);
+        m_top_hsizer->Add(mode_sizer, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, wxOSX ? 15 : 10);
     }
+    // hide whole top sizer to correct layout later
+    m_top_hsizer->ShowItems(false);
 
     //Horizontal sizer to hold the tree and the selected page.
     m_hsizer = new wxBoxSizer(wxHORIZONTAL);
@@ -461,20 +462,24 @@ void Tab::OnActivate()
     activate_selected_page([](){});
     m_hsizer->Layout();
 
-#ifdef _MSW_DARK_MODE
-    // Because of DarkMode we use our own Notebook (inherited from wxSiplebook) instead of wxNotebook
-    // And it looks like first Layout of the page doesn't update a size of the m_presets_choice
-    // So we have to set correct size explicitely
-    if (wxSize ok_sz = wxSize(35 * m_em_unit, m_presets_choice->GetBestSize().y);
-        ok_sz != m_presets_choice->GetSize()) {
-        m_presets_choice->SetMinSize(ok_sz);
-        m_presets_choice->SetSize(ok_sz);
-        GetSizer()->GetItem(size_t(0))->GetSizer()->Layout();
-        if (wxGetApp().tabs_as_menu())
-            m_presets_choice->update();
+    if (m_presets_choice->IsShown())
+        Refresh(); // Just refresh page, if m_presets_choice is already shown
+    else {
+        // From the tab creation whole top sizer is hidden to correct update of preset combobox's size
+        // (see https://github.com/prusa3d/PrusaSlicer/issues/10746)
+
+        // On first OnActivate call show top sizer
+        m_top_hsizer->ShowItems(true);
+        // Size and layouts of all items are correct now,
+        // but ALL items of top sizer are visible.
+        // So, update visibility of each item according to the ui settings
+        update_btns_enabling();
+        m_btn_hide_incompatible_presets->Show(m_show_btn_incompatible_presets && m_type != Slic3r::Preset::TYPE_PRINTER);
+        if (TabFilament* tab = dynamic_cast<TabFilament*>(this))
+            tab->update_extruder_combobox();
+
+        Layout();
     }
-#endif // _MSW_DARK_MODE
-    Refresh();
 }
 
 void Tab::update_label_colours()
@@ -1598,6 +1603,7 @@ void TabPrint::build()
         optgroup->append_single_option_line("solid_infill_extruder");
         optgroup->append_single_option_line("support_material_extruder");
         optgroup->append_single_option_line("support_material_interface_extruder");
+        optgroup->append_single_option_line("wipe_tower_extruder");
 
         optgroup = page->new_optgroup(L("Ooze prevention"));
         optgroup->append_single_option_line("ooze_prevention");
@@ -1619,6 +1625,7 @@ void TabPrint::build()
         optgroup = page->new_optgroup(L("Advanced"));
         optgroup->append_single_option_line("interface_shells");
         optgroup->append_single_option_line("mmu_segmented_region_max_width");
+        optgroup->append_single_option_line("mmu_segmented_region_interlocking_depth");
 
     page = add_options_page(L("Advanced"), "wrench");
         optgroup = page->new_optgroup(L("Extrusion width"));
@@ -1896,6 +1903,13 @@ void TabFilament::add_filament_overrides_page()
                                         "filament_retract_before_wipe"
                                      })
         create_line_with_near_label_widget(optgroup, opt_key, extruder_idx);
+
+    optgroup = page->new_optgroup(L("Retraction when tool is disabled"));
+    for (const std::string opt_key : {  "filament_retract_length_toolchange",
+                                        "filament_retract_restart_extra_toolchange"
+                                     })
+        create_line_with_near_label_widget(optgroup, opt_key, extruder_idx);
+
 }
 
 void TabFilament::update_filament_overrides_page()
@@ -1904,7 +1918,7 @@ void TabFilament::update_filament_overrides_page()
         return;
     Page* page = m_active_page;
 
-    const auto og_it = std::find_if(page->m_optgroups.begin(), page->m_optgroups.end(), [](const ConfigOptionsGroupShp og) { return og->title == "Retraction"; });
+    auto og_it = std::find_if(page->m_optgroups.begin(), page->m_optgroups.end(), [](const ConfigOptionsGroupShp og) { return og->title == "Retraction"; });
     if (og_it == page->m_optgroups.end())
         return;
     ConfigOptionsGroupShp optgroup = *og_it;
@@ -1932,6 +1946,16 @@ void TabFilament::update_filament_overrides_page()
         bool is_checked = opt_key=="filament_retract_length" ? true : have_retract_length;
         update_line_with_near_label_widget(optgroup, opt_key, extruder_idx, is_checked);
     }
+
+    og_it = std::find_if(page->m_optgroups.begin(), page->m_optgroups.end(), [](const ConfigOptionsGroupShp og) { return og->title == "Retraction when tool is disabled"; });
+    if (og_it == page->m_optgroups.end())
+        return;
+    optgroup = *og_it;
+
+    for (const std::string& opt_key : {"filament_retract_length_toolchange", "filament_retract_restart_extra_toolchange"})
+        update_line_with_near_label_widget(optgroup, opt_key, extruder_idx);
+
+
 }
 
 void TabFilament::create_extruder_combobox()
@@ -1949,6 +1973,9 @@ void TabFilament::create_extruder_combobox()
 
 void TabFilament::update_extruder_combobox()
 {
+    if (!m_presets_choice->IsShown())
+        return; // it will be updated later, on OnActive()
+
     const size_t extruder_cnt = static_cast<const ConfigOptionFloats*>(m_preset_bundle->printers.get_edited_preset().config.option("nozzle_diameter"))->values.size();
 
     m_extruders_cb->Show(extruder_cnt > 1);
@@ -2118,6 +2145,12 @@ void TabFilament::build()
         });
 
 
+        optgroup = page->new_optgroup(L("Toolchange parameters with multi extruder MM printers"));
+        optgroup->append_single_option_line("filament_multitool_ramming");
+        optgroup->append_single_option_line("filament_multitool_ramming_volume");
+        optgroup->append_single_option_line("filament_multitool_ramming_flow");
+
+
     add_filament_overrides_page();
 
 
@@ -2220,6 +2253,13 @@ void TabFilament::toggle_options()
         }
     }
 
+    if (m_active_page->title() == "Advanced")
+    {
+        bool multitool_ramming = m_config->opt_bool("filament_multitool_ramming", 0);
+        toggle_option("filament_multitool_ramming_volume", multitool_ramming);
+        toggle_option("filament_multitool_ramming_flow", multitool_ramming);
+    }
+
     if (m_active_page->title() == "Filament Overrides")
         update_filament_overrides_page();
 
@@ -2265,6 +2305,14 @@ void TabFilament::msw_rescale()
             win->SetInitialSize(win->GetBestSize());
 
     Tab::msw_rescale();
+}
+
+void TabFilament::sys_color_changed()
+{
+    m_extruders_cb->Clear();
+    update_extruder_combobox();
+
+    Tab::sys_color_changed();
 }
 
 void TabFilament::load_current_preset()
@@ -2983,7 +3031,7 @@ void TabPrinter::build_extruder_pages(size_t n_before_extruders)
                 update();
             });
 
-            auto has_changes = [this, extruder_idx]() {
+            auto has_changes = [this]() {
                 auto dirty_options = m_presets->current_dirty_options(true);
 #if 1
                 dirty_options.erase(std::remove_if(dirty_options.begin(), dirty_options.end(), 
@@ -3635,7 +3683,8 @@ bool Tab::select_preset(std::string preset_name, bool delete_current /*=false*/,
             }
         }
 
- //       update_tab_ui(); //! ysFIXME delete after testing
+        // ! update preset combobox, to revert previously selection
+        update_tab_ui();
 
         // Trigger the on_presets_changed event so that we also restore the previous value in the plater selector,
         // if this action was initiated from the plater.
@@ -5154,8 +5203,7 @@ void TabSLAPrint::build()
     optgroup->append_single_option_line("support_tree_type");
     optgroup->append_single_option_line("support_enforcers_only");
     
-    build_sla_support_params({{"", "Default"}, {"branching", "Branching"}}, page);
-
+    build_sla_support_params({{"", L("Default")}, {"branching", L("Branching")}}, page);
 
     optgroup = page->new_optgroup(L("Automatic generation"));
     optgroup->append_single_option_line("support_points_density_relative");

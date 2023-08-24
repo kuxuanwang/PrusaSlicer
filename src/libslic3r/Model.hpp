@@ -11,7 +11,6 @@
 #include "SLA/SupportPoint.hpp"
 #include "SLA/Hollowing.hpp"
 #include "TriangleMesh.hpp"
-#include "Arrange.hpp"
 #include "CustomGCode.hpp"
 #include "enum_bitmask.hpp"
 #include "TextConfiguration.hpp"
@@ -188,7 +187,7 @@ public:
     void assign(const LayerHeightProfile &rhs) { if (! this->timestamp_matches(rhs)) { m_data = rhs.m_data; this->copy_timestamp(rhs); } }
     void assign(LayerHeightProfile &&rhs) { if (! this->timestamp_matches(rhs)) { m_data = std::move(rhs.m_data); this->copy_timestamp(rhs); } }
 
-    std::vector<coordf_t> get() const throw() { return m_data; }
+    const std::vector<coordf_t>& get() const throw() { return m_data; }
     bool                  empty() const throw() { return m_data.empty(); }
     void                  set(const std::vector<coordf_t> &data) { if (m_data != data) { m_data = data; this->touch(); } }
     void                  set(std::vector<coordf_t> &&data) { if (m_data != data) { m_data = std::move(data); this->touch(); } }
@@ -224,6 +223,7 @@ private:
 enum class CutConnectorType : int {
     Plug
     , Dowel
+    , Snap
     , Undef
 };
 
@@ -315,10 +315,6 @@ enum class ModelVolumeType : int {
     SUPPORT_BLOCKER,
     SUPPORT_ENFORCER,
 };
-
-enum class ModelObjectCutAttribute : int { KeepUpper, KeepLower, KeepAsParts, FlipUpper, FlipLower, PlaceOnCutUpper, PlaceOnCutLower, CreateDowels, InvalidateCutInfo };
-using ModelObjectCutAttributes = enum_bitmask<ModelObjectCutAttribute>;
-ENABLE_ENUM_BITMASK_OPERATORS(ModelObjectCutAttribute);
 
 // A printable object, possibly having multiple print volumes (each with its own set of parameters and materials),
 // and possibly having multiple modifier volumes, each modifier volume with its set of parameters and materials.
@@ -461,35 +457,12 @@ public:
     size_t materials_count() const;
     size_t facets_count() const;
     size_t parts_count() const;
-    static indexed_triangle_set get_connector_mesh(CutConnectorAttributes connector_attributes);
-    void apply_cut_connectors(const std::string& name);
     // invalidate cut state for this object and its connectors/volumes
     void invalidate_cut();
     // delete volumes which are marked as connector for this object
     void delete_connectors();
     void clone_for_cut(ModelObject **obj);
 
-    void apply_cut_attributes(ModelObjectCutAttributes attributes);
-private:
-    // FIXME: These functions would best not be here at all. It might make sense to separate the
-    // cut-related methods elsewhere. Same holds for cut_connectors data member, which is currently
-    // just a temporary variable used by cut gizmo only.
-    void synchronize_model_after_cut();
-    
-    void process_connector_cut(ModelVolume* volume, const Transform3d& instance_matrix, const Transform3d& cut_matrix,
-                               ModelObjectCutAttributes attributes, ModelObject* upper, ModelObject* lower,
-                               std::vector<ModelObject*>& dowels);
-    void process_modifier_cut(ModelVolume* volume, const Transform3d& instance_matrix, const Transform3d& inverse_cut_matrix,
-                              ModelObjectCutAttributes attributes, ModelObject* upper, ModelObject* lower);
-    void process_volume_cut(ModelVolume* volume, const Transform3d& instance_matrix, const Transform3d& cut_matrix,
-                            ModelObjectCutAttributes attributes, TriangleMesh& upper_mesh, TriangleMesh& lower_mesh);
-    void process_solid_part_cut(ModelVolume* volume, const Transform3d& instance_matrix, const Transform3d& cut_matrix,
-                                ModelObjectCutAttributes attributes, ModelObject* upper, ModelObject* lower);
-public:
-    static void reset_instance_transformation(ModelObject* object, size_t src_instance_idx, const Transform3d& cut_matrix,
-                                              bool place_on_cut = false, bool flip = false);
-
-    ModelObjectPtrs cut(size_t instance, const Transform3d&cut_matrix, ModelObjectCutAttributes attributes);
     void split(ModelObjectPtrs*new_objects);
     void merge();
     // Support for non-uniform scaling of instances. If an instance is rotated by angles, which are not multiples of ninety degrees,
@@ -515,6 +488,8 @@ public:
     bool has_solid_mesh() const;
     // Detect if object has at least one negative volume mash
     bool has_negative_volume_mesh() const;
+    // Detect if object has at least one sla drain hole
+    bool has_sla_drain_holes() const { return !sla_drain_holes.empty(); }
     bool is_cut() const { return cut_id.id().valid(); }
     bool has_connectors() const;
 
@@ -781,6 +756,7 @@ public:
     // It contains information about connetors
     struct CutInfo
     {
+        bool                is_from_upper{ true };
         bool                is_connector{ false };
         bool                is_processed{ true };
         CutConnectorType    connector_type{ CutConnectorType::Plug };
@@ -798,12 +774,16 @@ public:
 
         void set_processed() { is_processed = true; }
         void invalidate()    { is_connector = false; }
+        void reset_from_upper() { is_from_upper = true; }
 
         template<class Archive> inline void serialize(Archive& ar) {
             ar(is_connector, is_processed, connector_type, radius_tolerance, height_tolerance);
         }
     };
     CutInfo             cut_info;
+
+    bool                is_from_upper() const    { return cut_info.is_from_upper; }
+    void                reset_from_upper()       { cut_info.reset_from_upper(); }
 
     bool                is_cut_connector() const { return cut_info.is_processed && cut_info.is_connector; }
     void                invalidate_cut_info()    { cut_info.invalidate(); }
@@ -850,7 +830,6 @@ public:
     bool                is_the_only_one_part() const; // behave like an object
     t_model_material_id material_id() const { return m_material_id; }
     void                reset_extra_facets();
-    void                apply_tolerance();
     void                set_material_id(t_model_material_id material_id);
     ModelMaterial*      material() const;
     void                set_material(t_model_material_id material_id, const ModelMaterial &material);
@@ -1175,11 +1154,7 @@ public:
 
     bool is_printable() const { return object->printable && printable && (print_volume_state == ModelInstancePVS_Inside); }
 
-    // Getting the input polygon for arrange
-    arrangement::ArrangePolygon get_arrange_polygon() const;
-    
-    // Apply the arrange result on the ModelInstance
-    void apply_arrange_result(const Vec2d& offs, double rotation);
+    void invalidate_object_bounding_box() { object->invalidate_bounding_box(); }
 
 protected:
     friend class Print;

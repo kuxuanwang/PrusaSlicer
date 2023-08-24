@@ -49,6 +49,11 @@ public:
         bool edited  { false };
         bool clicked { false };
         bool deactivated_after_edit { false };
+        // flag to indicate possibility to take snapshot from the slider value
+        // It's used from Gizmos to take snapshots just from the very beginning of the editing
+        bool can_take_snapshot { false };
+        // When Undo/Redo snapshot is taken, then call this function
+        void invalidate_snapshot() { can_take_snapshot = false; }
     };
 
     ImGuiWrapper();
@@ -80,6 +85,7 @@ public:
     ImVec2 get_item_spacing() const;
     float  get_slider_float_height() const;
     const LastSliderStatus& get_last_slider_status() const { return m_last_slider_status; }
+    LastSliderStatus& get_last_slider_status() { return m_last_slider_status; }
 
     void set_next_window_pos(float x, float y, int flag, float pivot_x = 0.0f, float pivot_y = 0.0f);
     void set_next_window_bg_alpha(float alpha);
@@ -120,7 +126,8 @@ public:
     bool image_button(const wchar_t icon, const wxString& tooltip = L"");
 
     // Use selection = -1 to not mark any option as selected
-    bool combo(const wxString& label, const std::vector<std::string>& options, int& selection, ImGuiComboFlags flags = 0);
+    bool combo(const std::string& label, const std::vector<std::string>& options, int& selection, ImGuiComboFlags flags = 0, float label_width = 0.0f, float item_width = 0.0f);
+    bool combo(const wxString& label, const std::vector<std::string>& options, int& selection, ImGuiComboFlags flags = 0, float label_width = 0.0f, float item_width = 0.0f);
     bool undo_redo_list(const ImVec2& size, const bool is_undo, bool (*items_getter)(const bool, int, const char**), int& hovered, int& selected, int& mouse_wheel);
     void search_list(const ImVec2& size, bool (*items_getter)(int, const char** label, const char** tooltip), char* search_str,
                      Search::OptionViewParameters& view_params, int& selected, bool& edited, int& mouse_wheel, bool is_localized);

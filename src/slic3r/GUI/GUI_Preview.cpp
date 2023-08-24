@@ -181,6 +181,12 @@ Preview::Preview(
         load_print();
 }
 
+void Preview::set_layers_slider_values_range(int bottom, int top)
+{
+    m_layers_slider->SetHigherValue(std::min(top, m_layers_slider->GetMaxValue()));
+    m_layers_slider->SetLowerValue(std::max(bottom, m_layers_slider->GetMinValue()));
+}
+
 bool Preview::init(wxWindow* parent, Bed3D& bed, Model* model)
 {
     if (!Create(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, 0 /* disable wxTAB_TRAVERSAL */))
@@ -271,6 +277,11 @@ void Preview::set_drop_target(wxDropTarget* target)
 {
     if (target != nullptr)
         SetDropTarget(target);
+}
+
+void Preview::load_gcode_shells()
+{
+    m_canvas->load_gcode_shells();
 }
 
 void Preview::load_print(bool keep_z_range)
